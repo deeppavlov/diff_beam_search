@@ -12,7 +12,7 @@ Code for paper: XXX
 
 * Add expected_bleu module to PYTHONPATH
 
-``` export PYTHONPATH="${PYTHONPATH}:/<PATH>/<TO>/pytorch_nmt/expected_bleu" ```
+``` export PYTHONPATH="${PYTHONPATH}:/<PATH>/<TO>/bleu_lower_bound/expected_bleu" ```
 
 * See preprocessing directory and `preprocessing/README.md` first.
 Run the script (borrowed from [Harvard NLP repo](https://github.com/harvardnlp/BSO/tree/master/data_prep/MT)) to download and preprocess IWSLT'14 dataset:
