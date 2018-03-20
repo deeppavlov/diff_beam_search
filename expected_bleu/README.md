@@ -6,6 +6,18 @@ We are using <img src="https://raw.githubusercontent.com/pytorch/pytorch/master/
 
 Our code inspired on this [tensorflow.NMT BLEU script](https://github.com/tensorflow/nmt/blob/master/nmt/scripts/bleu.py)
 
+Example:
+```
+from modules.expectedMultiBleu import bleu
+...
+b = bleu(probs, self.references_batch, \
+LongTensor([self.translation_len] * self.batch_size),\
+self.references_lengths, max_order=self.max_order, smooth=True)
+b[0].backward()
+```
+
+
+
 * ``` multiBLEU_results.ipynb ``` - results of batched version of our LB on the same but batched version of toy task.
 * ```modules```
 * * ```modules/expectedMultiBleu.py``` - contains implementation of batched lower bound version from the paper.

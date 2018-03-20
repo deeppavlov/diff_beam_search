@@ -17,7 +17,7 @@ CUDA_VISIBLE_DEVICES=${gpu_id} python nmt.py \
     --seed ${gpu_id}\
     --cuda\
     --mode train \
-    --vocab data/iwslt.vocab.bin \
+    --vocab data/vocab.bin \
     --save_to models/${model_name}_${gpu_id} \
     --valid_niter 2400 \
     --beam_size 5 \

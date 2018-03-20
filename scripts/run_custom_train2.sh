@@ -1,11 +1,11 @@
 #!/bin/sh
 
-train_src="../data/train.de-en.de.wmixerprep"
-train_tgt="../data/train.de-en.en.wmixerprep"
-dev_src="../data/valid.de-en.de"
-dev_tgt="../data/valid.de-en.en"
-test_src="../data/test.de-en.de"
-test_tgt="../data/test.de-en.en"
+train_src="data/train.de-en.de.wmixerprep"
+train_tgt="data/train.de-en.en.wmixerprep"
+dev_src="data/valid.de-en.de"
+dev_tgt="data/valid.de-en.en"
+test_src="data/test.de-en.de"
+test_tgt="data/test.de-en.en"
 
 
 job_name="iwslt14.ml.512enc.test"
@@ -14,7 +14,7 @@ model_name=$1
 gpu_id=$2
 job_file="scripts/train."${job_name}".sh"
 decode_file=${job_name}".test.en"
-CUDA_VISIBLE_DEVICES=${gpu_id} python ../nmt.py \
+CUDA_VISIBLE_DEVICES=${gpu_id} python nmt.py \
     --seed ${gpu_id}\
     --cuda\
     --mode custom2 \
