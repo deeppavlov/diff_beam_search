@@ -221,13 +221,13 @@ class NMT(nn.Module):
         return scores
 
     def translate(self, src_sents, beam_size=None, to_word=True, args_new=None):
+        global args
         """
         perform beam search
         TODO: batched beam search
         """
         if args_new:
-            eval('args = args_new')
-            # args = args_new
+            args = args_new
         if not type(src_sents[0]) == list:
             src_sents = [src_sents]
         if not beam_size:
