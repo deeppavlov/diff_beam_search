@@ -15,12 +15,12 @@ See ```EXAMPLE_SETUP.md```
 
 ``` export PYTHONPATH="${PYTHONPATH}:/<PATH>/<TO>/pytorch_nmt/expected_bleu" ```
 If you just want to include this loss into your MT - see expected_bleu directory. If you want to reproduce read on.
-* Run the script (borrowed from [Harvard NLP repo](https://github.com/harvardnlp/BSO/tree/master/data_prep/MT)) to download and preprocess IWSLT'14 dataset:
+* (See NOTE below) Run the script (borrowed from [Harvard NLP repo](https://github.com/harvardnlp/BSO/tree/master/data_prep/MT)) to download and preprocess IWSLT'14 dataset:
 ```shell
 $ cd preprocessing
 $ source prepareData.sh
 ```
-NOTE: this script requires Lua and luaTorch. As an alternative, you can download all necessary files(data directory) from [this repo](https://github.com/pcyin/pytorch_nmt/tree/master/data)
+NOTE: this script requires Lua and luaTorch. As an alternative, you can download all necessary files(data directory) from [this repo](https://github.com/pcyin/pytorch_nmt/tree/master/data) or via this [link](https://minhaskamal.github.io/DownGit/#/home?url=https://github.com/pcyin/pytorch_nmt/tree/master/data)
 
 * Generate Vocabulary Files
 
