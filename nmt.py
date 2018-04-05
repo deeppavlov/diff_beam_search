@@ -20,7 +20,7 @@ import argparse, os, sys
 
 from util import read_corpus, data_iter, batch_slice
 from vocab import Vocab, VocabEntry
-mport math
+import math
 from expected_bleu.modules.expectedMultiBleu import bleu, bleu_with_bp
 from expected_bleu.TF_GOOGLE_NMT import compute_bleu
 from expected_bleu.modules.utils import bleu_score, reinforce_bleu
