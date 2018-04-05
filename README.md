@@ -13,7 +13,7 @@ See ```EXAMPLE_SETUP.md```
 
 * Add expected_bleu module to PYTHONPATH
 
-``` export PYTHONPATH="${PYTHONPATH}:/<PATH>/<TO>/pytorch_nmt/expected_bleu" ```
+``` export PYTHONPATH="${PYTHONPATH}:/<PATH>/<TO>/<repo(bleu_lower_bound)>/expected_bleu" ```
 If you just want to include this loss into your MT - see expected_bleu directory. If you want to reproduce read on.
 * (See NOTE below) Run the script (borrowed from [Harvard NLP repo](https://github.com/harvardnlp/BSO/tree/master/data_prep/MT)) to download and preprocess IWSLT'14 dataset:
 ```shell

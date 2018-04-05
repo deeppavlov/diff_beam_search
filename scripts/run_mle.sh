@@ -13,7 +13,7 @@ model_name="model."${job_name}
 job_file="scripts/train."${job_name}".sh"
 decode_file=${job_name}".test.en"
 gpu_id=$1
-CUDA_VISIBLE_DEVICES=${gpu_id} python nmt.py \
+CUDA_VISIBLE_DEVICES=${gpu_id} python3 nmt.py \
     --seed ${gpu_id}\
     --cuda\
     --mode train \
@@ -33,7 +33,7 @@ CUDA_VISIBLE_DEVICES=${gpu_id} python nmt.py \
     --dev_src ${dev_src} \
     --dev_tgt ${dev_tgt}
 
-# CUDA_VISIBLE_DEVICES=7 python nmt.py \
+# CUDA_VISIBLE_DEVICES=7 python3 nmt.py \
 #     --cuda \
 #     --mode test \
 #     --load_model models/${model_name}.bin \
