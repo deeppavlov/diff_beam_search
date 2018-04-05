@@ -20,7 +20,7 @@ decode_file=${job_name}_${gpu_id}_${experiment_name}".test.en"
 beam_size=1
 if [[ ${mode} == "test" ]];
 then
-  CUDA_VISIBLE_DEVICES=${gpu_id} python ../nmt.py \
+  CUDA_VISIBLE_DEVICES=${gpu_id} python nmt.py \
       --cuda \
       --mode test \
       --load_model ${model_name} \
@@ -31,7 +31,7 @@ then
       --test_tgt ${test_tgt}
   perl multi-bleu.perl ${test_tgt} < decode/${decode_file} > logs/${test_log}
 else
-  CUDA_VISIBLE_DEVICES=${gpu_id} python ../nmt.py \
+  CUDA_VISIBLE_DEVICES=${gpu_id} python nmt.py \
       --cuda \
       --mode test \
       --load_model ${model_name} \
