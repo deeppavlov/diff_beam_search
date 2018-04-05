@@ -56,6 +56,7 @@ bash scripts/run_custom_train.sh models/model_name <gpu_id>
 
 bash scripts/test_mle.sh <path to model> <gpu_id> <mode_name>
 ```
+```<mode_name>``` equals to test or train (depends on what dataset you want to evaluate)
 see result in logs directory.
 
 For multi experiments testing see scripts:
