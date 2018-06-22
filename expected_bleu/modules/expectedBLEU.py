@@ -4,7 +4,6 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.autograd import Variable
 from copy import deepcopy
 from collections import Counter
 from copy import deepcopy as copy
@@ -29,7 +28,7 @@ def overlap(t, r_hot, r, f, temp, n):
     from_ref = list([i.data[0] for i in r])
     from_ref_t = LongTensor(from_ref)
     mapper_ref = {j:i for i, j in enumerate(from_ref)}
-    res = CUDA_wrapper(Variable(FloatTensor([0])))
+    res = CUDA_wrapper(torch.tensor([0], requires_grad=True))
     M = [[from_ref[i + j] for j in range(n)] for i in range(len(from_ref) - n + 1)]
     mul = lambda x, y: x * y
     start_all = time.time()

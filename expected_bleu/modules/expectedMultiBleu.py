@@ -142,7 +142,8 @@ def calculate_overlap(p, r, n, lengths):
     term = torch.min(A, A * second_arg)
     return torch.sum(torch.sum(term, 2), 1)
 
-def bleu(p, r, translation_lengths, reference_lengths, max_order=4, smooth=False):
+
+def bleu(p, r, translation_lengths, reference_lengths, max_order=4, smooth=False, device=torch.device("cpu")):
     """
     p - matrix with probabilityes
     r - reference batch
@@ -158,13 +159,13 @@ def bleu(p, r, translation_lengths, reference_lengths, max_order=4, smooth=False
         overlaps_list.append(calculate_overlap(p, r, n, reference_lengths))
     overlaps = torch.stack(overlaps_list)
     matches_by_order = torch.sum(overlaps, 1)
-    possible_matches_by_order = torch.zeros(max_order)
+    possible_matches_by_order = torch.zeros(max_order).to(device)
     for n in range(1, max_order + 1):
         cur_pm = translation_lengths.float() - n + 1
         mask = cur_pm > 0
         cur_pm *= mask.float()
         possible_matches_by_order[n - 1] = torch.sum(cur_pm)
-    precisions = Variable(FloatTensor([0] * max_order))
+    precisions = torch.tensor([0] * max_order,device=device, dtype=torch.float)
     for i in range(max_order):
         if smooth:
             precisions[i] = (matches_by_order[i] + 1) /\
@@ -174,7 +175,7 @@ def bleu(p, r, translation_lengths, reference_lengths, max_order=4, smooth=False
                 precisions[i] = matches_by_order[i] /\
                                             possible_matches_by_order[i]
             else:
-                precisions[i] = Variable(FloatTensor([0]))
+                precisions[i] = torch.tensor([0], dtype=torch.float, device=device)
     if torch.min(precisions[:max_order]).data[0] > 0:
         p_log_sum = sum([(1. / max_order) * torch.log(p) for p in precisions])
         geo_mean = torch.exp(p_log_sum)
@@ -193,21 +194,20 @@ def bleu(p, r, translation_lengths, reference_lengths, max_order=4, smooth=False
     bleu = -geo_mean * bp
     return bleu, precisions
 
-def continuous_lengths(probs: Variable, eos_id: int):
+def continuous_lengths(probs: torch.Tensor, eos_id: int):
     """
     probs: b x seq_len x vocab_size
     eos_id - end of sentence id
     """
     eos_probs = probs[:, : , eos_id]
     eos_shifted_logs = torch.cumsum(torch.log(1 - eos_probs), dim=1)[:, :-1]
-    pad_first = Variable(CUDA_wrapper(torch.zeros(\
-                        eos_shifted_logs.size()[0], 1)-1E3), requires_grad=False)
+    pad_first = CUDA_wrapper(torch.zeros(\
+                        eos_shifted_logs.size()[0], 1)-1E3)
     eos_real_probs = torch.exp(torch.cat((pad_first ,eos_shifted_logs), dim=1) + torch.log(eos_probs))
     seq_len = eos_probs.size()[1]
     batch_size = eos_probs.size()[0]
     sizes = FloatTensor([[i+1 for i in range(seq_len)]\
                                for _ in range(batch_size)]).view(batch_size, seq_len)
-    sizes = Variable(sizes, requires_grad=False)
     return torch.sum(eos_real_probs * sizes, dim=1)
 
 def bleu_with_bp(p: Variable, r: list, reference_lengths: list,\
@@ -246,8 +246,8 @@ def bleu_with_bp(p: Variable, r: list, reference_lengths: list,\
                 precisions[i] = matches_by_order[i] /\
                                             possible_matches_by_order[i]
             else:
-                precisions[i] = Variable(FloatTensor([0]))
-    if torch.min(precisions[:max_order]).data[0] > 0:
+                precisions[i] = torch.tensor([0], dtype=torch.float, requires_grad=True)
+    if torch.min(precisions[:max_order]).item() > 0:
         p_log_sum = sum([(1. / max_order) * torch.log(p) for p in precisions])
         geo_mean = torch.exp(p_log_sum)
     else:
@@ -255,10 +255,10 @@ def bleu_with_bp(p: Variable, r: list, reference_lengths: list,\
                         reduce(lambda x, y: x*y, precisions), 1./max_order)
         eprint('WARNING: some precision(s) is zero')
     ratio = translation_length / float(reference_length)
-    if ratio.data[0] > 1.0:
+    if ratio.item() > 1.0:
         bp = 1.0
     else:
-        if ratio.data[0] > 1E-1:
+        if ratio.item() > 1E-1:
             bp = torch.exp(1 - 1. / ratio)
             # bp = Variable(torch.from_numpy(np.exp(1 - 1. / ratio)), requeires_grad=False)
         else:
