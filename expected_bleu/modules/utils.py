@@ -81,6 +81,6 @@ class SoftmaxWithTemperature:
 
 def fill_eye_diag(a):
     _, s1, s2 = a.data.shape
-    dd = Variable(CUDA_wrapper(torch.eye(s1)))
+    dd = torch.eye(s1, requires_grad=True)
     zero_dd = 1 - dd
     return a * zero_dd + dd
