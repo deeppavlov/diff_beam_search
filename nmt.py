@@ -79,6 +79,7 @@ def init_config():
     parser.add_argument('--sample_method', default='random', choices=['random', 'greedy','gumbel'])
     parser.add_argument('--use_teacher_forcing',action='store_true', default=False)
     parser.add_argument('--st_gumbel',action='store_true', default=False, help='use gumbel Straight-Through version')
+    parser.add_argument('--cross_entropy',action='store_true', default=False, help='use cross-entropy as a loss function')
 
     args = parser.parse_args()
 
@@ -159,10 +160,12 @@ class NMT(nn.Module):
 
         #self.actor = Actor(2 * args.hidden_size, 64, 2 * args.hidden_size)
 
-    def forward(self, src_sents, src_sents_len, tgt_words, use_teacher_forcing=True, use_actor=False, relax_beam = False, beam_size=2):
+    def forward(self, src_sents, src_sents_len, tgt_words, use_teacher_forcing=True, use_actor=False,\
+                relax_beam = False, beam_size=2, temperature=1.0):
         src_encodings, init_ctx_vec = self.encode(src_sents, src_sents_len)
         if relax_beam:
-            return self.relax_decode(src_encodings, init_ctx_vec, tgt_sents=tgt_words, beam_size=beam_size)
+            return self.relax_decode(src_encodings, init_ctx_vec,\
+                                     tgt_sents=tgt_words, beam_size=beam_size, temperature=temperature)
         scores = self.decode(src_encodings, init_ctx_vec, tgt_words, use_teacher_forcing, use_actor)
         return scores
 
@@ -334,14 +337,14 @@ class NMT(nn.Module):
         completed_hypothesis_scores = []
 
         t = 0
-        while len(completed_hypotheses) < beam_size and t < 50:#args.decode_max_time_step:
+        while len(completed_hypotheses) < beam_size and t < 157:#args.decode_max_time_step:
             t += 1
             hyp_num = len(hypotheses)
 
             expanded_src_encoding = src_encoding.expand(src_encoding.size(0), hyp_num, src_encoding.size(2))
             expanded_src_encoding_att_linear = src_encoding_att_linear.expand(src_encoding_att_linear.size(0), hyp_num, src_encoding_att_linear.size(2))
             with torch.no_grad():
-                y_tm1 = torch.tensor([hyp[-1] for hyp in hypotheses], device=device, requires_grad=True)
+                y_tm1 = torch.tensor([hyp[-1] for hyp in hypotheses], device=device)
 
                 y_tm1_embed = self.tgt_embed(y_tm1)
 
@@ -364,7 +367,6 @@ class NMT(nn.Module):
             prev_hyp_ids = top_new_hyp_pos / tgt_vocab_size
             word_ids = top_new_hyp_pos % tgt_vocab_size
             # new_hyp_scores = new_hyp_scores[top_new_hyp_pos.data]
-
             new_hypotheses = []
             live_hyp_ids = []
             new_hyp_scores = []
@@ -387,24 +389,22 @@ class NMT(nn.Module):
             hidden = (h_t[live_hyp_ids], cell_t[live_hyp_ids])
             att_tm1 = att_t[live_hyp_ids]
             with torch.no_grad():
-                hyp_scores = torch.tensor(new_hyp_scores, dtype=torch.float, device=device, requires_grad=True) # new_hyp_scores[live_hyp_ids]
+                hyp_scores = torch.tensor(new_hyp_scores, dtype=torch.float, device=device) # new_hyp_scores[live_hyp_ids]
                 hypotheses = new_hypotheses
-        # print(completed_hypotheses)
-        # print(completed_hypothesis_scores)
-        # print(len(completed_hypotheses))
+
         if len(completed_hypotheses) == 0:
             completed_hypotheses = [hypotheses[0]]
             completed_hypothesis_scores = [0.0]
+
         if to_word:
             for i, hyp in enumerate(completed_hypotheses):
                 completed_hypotheses[i] = [self.vocab.tgt.id2word[w] for w in hyp]
 
         ranked_hypotheses = sorted(zip(completed_hypotheses, completed_hypothesis_scores), key=lambda x: x[1], reverse=True)
-
         return [hyp for hyp, score in ranked_hypotheses]
 
     def translate_batch(self, src_batch, beam_size=2):
-        ''' Translation work in one batch '''
+        """ Translation work in one batch """
 
         # Batch size is in different location depending on data.
         from beam import Beam
@@ -417,22 +417,13 @@ class NMT(nn.Module):
         def bottle(m):
             return m.view(n_remaining_sents * beam_size, -1)
 
-        def unbottle(m):
-            return m.view(n_remaining_sents,beam_size, -1)
-
         src_seq = src_batch
         batch_size = len(src_seq)
         n_remaining_sents = batch_size
         src_sents_len = [len(s) for s in src_seq]
-        # - Enocde
         src_sents_var = to_input_variable(src_seq, self.vocab.src)
-        # --- Repeat data for beam
-        #src_seq = torch.tensor(
-         #   src_seq.data.repeat(1, beam_size)).view(
-          #      src_seq.size(0) * beam_size, src_seq.size(1))
 
-        #src_seq = src_sents_var.repeat(1, beam_size, 1)\
-        #    .view(src_sents_var.size(0) * beam_size, src_sents_var.size(1))
+        # --- Encode data for beam
         enc_output, init_dec = self.encode(src_sents_var, src_sents_len)
         # (batch_size, src_sent_len, hidden_size * 2)
         enc_output = enc_output.permute(1, 0, 2)
@@ -445,20 +436,14 @@ class NMT(nn.Module):
             beam_idx: inst_idx for inst_idx, beam_idx in enumerate(range(batch_size))}
         n_remaining_sents = batch_size
 
-        #print(beams[0].get_current_state().size())
-        #print("enc_output", enc_output.size())
-
         src_encoding_att_linear = tensor_transform(self.att_src_linear, enc_output)
-        #att_tm1 = torch.zeros(beam_size * batch_size, self.args.hidden_size, device=device, requires_grad=True)
-        init_state = init_dec[0]
-        init_cell = init_dec[1]
         att_tm1 = torch.zeros(beam_size * batch_size, self.args.hidden_size, device=device, requires_grad=False)
         init_state = bottle(rvar(init_dec[0].data))
         init_cell = bottle(rvar(init_dec[1].data))
         hidden = (init_state, init_cell)
         # - Decode
         #TODO len decoding
-        for i in range(50):
+        for i in range(157):
             if all((b.done() for b in beams)):
                 # all instances have finished their path to <\s>
                 break
@@ -473,7 +458,6 @@ class NMT(nn.Module):
             x_dec = torch.cat([dec_embed, att_tm1], 1)
             # -- Decoding -- #
 
-            #z = self.actor(x_dec)
             #(hyp_num, hidden_size) x2
             h_t, cell_t = self.decoder_lstm(x_dec, hidden)
             h_t = self.dropout(h_t)
@@ -495,10 +479,10 @@ class NMT(nn.Module):
                     continue
 
                 inst_idx = beam_inst_idx_map[beam_idx]
-                if not beams[beam_idx].advance(word_lk.data[inst_idx]):
+                if not beams[beam_idx].advance(word_lk[inst_idx]):
                     active_beam_idx_list += [beam_idx]
-            # Update parameters
 
+            # Update parameters
             if not active_beam_idx_list:
                 # all instances have finished their path to <\s>
                 break
@@ -514,7 +498,6 @@ class NMT(nn.Module):
 
             def update_active_enc_info(enc_info_var, active_inst_idxs):
                 """Remove the encoder outputs of finished instances in one batch. """
-
                 inst_idx_dim_size, *rest_dim_sizes = enc_info_var.size()
                 inst_idx_dim_size = inst_idx_dim_size * len(active_inst_idxs) // n_remaining_sents
                 new_size = (inst_idx_dim_size, *rest_dim_sizes)
@@ -544,34 +527,31 @@ class NMT(nn.Module):
             hidden = h_t, cell_t
 
             enc_output = update_active_enc_info(enc_output, active_inst_idxs)
+            #src_encoding_att_linear = update_active_enc_info(src_encoding_att_linear,active_inst_idxs)
             src_encoding_att_linear = tensor_transform(self.att_src_linear, enc_output)
 
             # - update the remaining size
             n_remaining_sents = len(active_inst_idxs)
         # - Return useful information
         all_hyp, all_scores = [], []
-        n_best = 1 #TODO  is n_best
-
+        n_best = 3 #TODO  is n_best
         for beam_idx in range(batch_size):
+            #hyps.append(beams[beam_idx].completed_hyps)
             scores, tail_idxs = beams[beam_idx].sort_scores()
             all_scores += [scores[:n_best].data.cpu().numpy()]
             hyps = [beams[beam_idx].get_hypothesis(i) for i in tail_idxs[:n_best]]
             all_hyp += [hyps]
+            #all_hyp += [beams[beam_idx].completed_hyps]
 
         for i, batch_hyp in enumerate(all_hyp):
             for j, hyp in enumerate(batch_hyp):
                 all_hyp[i][j] = [self.vocab.tgt.id2word[w.item()] for w in hyp]
+                all_hyp[i][j].insert(0,'<s>')
 
 
-        # print(all_hyp)
-        # print(all_scores)
-        # for beam_idx in range(batch_size):
-        #     print("beams:",beams[beam_idx].sort_scores())
-        #print(len(all_hyp[0]))
-        #ranked_hypotheses = sorted(zip(all_hyp, all_scores), key=lambda x: x[1].all(), reverse=True)
         return [hyp for hyp in all_hyp]
 
-    def relax_decode(self, enc_output, init_dec, tgt_sents=None, beam_size=2):
+    def relax_decode(self, enc_output, init_dec, tgt_sents=None, beam_size=2, temperature=1.0):
         # Help functions for working with beams and batches
         def var(a): return a
 
@@ -583,6 +563,8 @@ class NMT(nn.Module):
         def unbottle(m):
             return m.view(n_remaining_sents,beam_size, -1)
 
+        if beam_size != args.beam_size:
+            print("Error in beam size", beam_size)
         batch_size =  enc_output.size(1)
         n_remaining_sents = batch_size
         # (batch_size, src_sent_len, hidden_size * 2)
@@ -590,6 +572,12 @@ class NMT(nn.Module):
 
         enc_output = enc_output.repeat(1, beam_size, 1).view(
                 enc_output.size(0) * beam_size, enc_output.size(1), enc_output.size(2))
+
+        from relax_beam import RelaxBeam
+        beams = [RelaxBeam(beam_size, self.vocab.tgt['<pad>'], self.vocab.tgt['<s>'],\
+                           self.vocab.tgt['</s>']) for _ in range(batch_size)]
+        beam_inst_idx_map = {
+            beam_idx: inst_idx for inst_idx, beam_idx in enumerate(range(batch_size))}
 
         if tgt_sents is not None:
             tgt_lens = max([len(t) for t in tgt_sents.transpose(0, 1)])
@@ -628,21 +616,20 @@ class NMT(nn.Module):
             new_logs = logits.view(n_remaining_sents, -1)
             m ,_ = torch.topk(new_logs,beam_size,-1)
             m = m.unsqueeze_(2).to(device)
-            lob = F.softmax((-(new_logs.unsqueeze_(1) - m)**2), dim=-1) #
+            lob = F.softmax(temperature * (-(new_logs.unsqueeze_(1) - m)**2), dim=-1) #
 
             # print(torch.max(lob,dim=-1))
             # print(torch.argmax(new_logs,dim=-1))
             # print(torch.argmax(lob, dim=-1)[:,0])
 
-            #print(torch.argmax(new_logs,dim=-1).view(-1, batch_size))
-            #print(torch.equal(torch.argmax(lob, dim=-1)[:,0],torch.argmax(new_logs,dim=-1).view(batch_size,-1)))
-            if not torch.equal(torch.argmax(lob, dim=-1)[:,0],torch.argmax(new_logs,dim=-1).view(-1, batch_size)[0]):
-                print(torch.equal(torch.argmax(lob, dim=-1)[:,0],torch.argmax(new_logs,dim=-1).view(-1, batch_size)[0]))
+            # if not torch.equal(torch.argmax(lob, dim=-1)[:,0],torch.argmax(new_logs,dim=-1).view(-1, n_remaining_sents)[0]):
+            #     print(torch.equal(torch.argmax(lob, dim=-1)[:,0],torch.argmax(new_logs,dim=-1).view(-1, n_remaining_sents)[0]))
+            #     print(torch.topk(new_logs,beam_size,-1))
+            #     print(torch.argmax(lob, dim=-1))
 
-                print(torch.topk(new_logs,beam_size,-1))
-                print(torch.argmax(lob, dim=-1))
+            return lob.view(n_remaining_sents, beam_size, beam_size, -1)
 
-            return lob.view(batch_size, beam_size, beam_size, -1)
+        #eos_embd = self.tgt_embed(torch.tensor([self.vocab.tgt['</s>']], device=device))
 
         # - Decode
         #TODO len decoding
@@ -655,15 +642,18 @@ class NMT(nn.Module):
 
         #dec_embed = self.tgt_embed(dec_partial_seq).view(n_remaining_sents * beam_size,-1).to(device)
         #print(dec_embed.size())
-        y_0 = torch.tensor([self.vocab.tgt['<s>'] for _ in range(batch_size)], \
-                           dtype=torch.long, device=device, requires_grad=True).repeat(1,beam_size,1).\
-            view(n_remaining_sents * beam_size,-1).to(device)
+        # y_0 = torch.tensor([self.vocab.tgt['<s>'] for _ in range(batch_size)], \
+        #                    dtype=torch.long, device=device, requires_grad=True).repeat(1,beam_size,1).\
+        #     view(n_remaining_sents * beam_size,-1).to(device)
+        y_0 = torch.tensor([tgt_sents[0][i] for i in range(batch_size)],\
+                           dtype=torch.long, device=device, requires_grad=True).repeat(1, beam_size, 1). \
+            view(n_remaining_sents * beam_size, -1).to(device)
+
         dec_embed= self.tgt_embed(y_0).squeeze(1)
-
         logits = []
-        new_scores = torch.zeros((batch_size, beam_size), device=device)
+        new_scores = torch.zeros((n_remaining_sents, beam_size), device=device)
         #logs = torch.tensor((1,batch_size, beam_size, len(self.vocab.tgt)), device=device)
-
+        scores = []
         for i in range(tgt_lens):
             # size: (batch * beam) x
             x_dec = torch.cat([dec_embed, att_tm1], 1)
@@ -678,9 +668,16 @@ class NMT(nn.Module):
             att_t = self.dropout(att_t)
 
             score_t = self.readout(att_t)
-            log = score_t.view(n_remaining_sents, beam_size, -1).contiguous()
+            # batch x beam x n_words
 
-            logits.append(log)
+            log = score_t.view(n_remaining_sents, beam_size, -1).contiguous()
+            if n_remaining_sents < batch_size:
+                new_logit = logits[-1]
+                print("n_remaining_sents", n_remaining_sents)
+                new_logit[n_remaining_sents].data = log.data
+                logits.append(new_logit)
+            else:
+                logits.append(log)
             s_tilda = log + new_scores[...,None]
             s_tilda = s_tilda.squeeze(2)
             P = continuous_topk(s_tilda)
@@ -691,21 +688,21 @@ class NMT(nn.Module):
             backpointer = torch.sum(P, dim=-1)
             dec_embed = bottle(torch.matmul(adv, self.tgt_embed.weight))
             new_scores = torch.stack([torch.sum(s_tilda.mul(P[:,k]), dim=1).sum(1) for k in range(beam_size)],dim=1)
-            h_t = bottle(torch.bmm(backpointer, unbottle(h_t)))
 
-            # for beam_idx in range(batch_size):
-            #     # if beams[beam_idx].done():
-            #     #     print("done", beam_idx)
-            #     #     continue
-            #     beams[beam_idx].update_score(new_scores[beam_idx])
+            h_t = bottle(torch.bmm(backpointer, unbottle(h_t)))
+            scores.append(new_scores)
+
+            active_beam_idx_list = []
+            for beam_idx in range(batch_size):
+                if beams[beam_idx].done():
+                    continue
+
+                inst_idx = beam_inst_idx_map[beam_idx]
+                beams[beam_idx].update_score(new_scores[inst_idx])
 
             hidden = h_t, cell_t
             att_tm1 = att_t
-
-            # dec_embed = update_active_enc_info(dec_embed, active_inst_idxs)
-            # enc_output = update_active_enc_info(enc_output, active_inst_idxs)
             src_encoding_att_linear = tensor_transform(self.att_src_linear, enc_output)
-
             #- update the remaining size
             n_remaining_sents = batch_size
 
@@ -713,30 +710,11 @@ class NMT(nn.Module):
         # - Return useful information
         # all_hyp, all_scores = [], []
         # n_best = 1 #TODO  is n_best
-        # total_score = []
+        total_score = []
         #
-        # for beam_idx in range(batch_size):
-        #     #scores, tail_idxs = beams[beam_idx].sort_scores()
-        #     #print(torch.stack(beams[beam_idx].total_score, dim=1).size())
-        #     total_score.append(beams[beam_idx].total_score)
 
-        return torch.stack(logits, dim=0), new_scores
+        return torch.stack(logits, dim=0), torch.stack(scores,dim=0)
 
-    def _from_beam(self, beam, n_best):
-        ret = {"predictions": [],
-               "scores": [],
-               "attention": []}
-        for b in beam:
-            scores, ks = b.sort_scores()
-            hyps, attn = [], []
-            for i, (times, k) in enumerate(ks[:n_best]):
-                hyp, att = b.get_hypothesis(times, k)
-                hyps.append(hyp)
-                attn.append(att)
-            ret["predictions"].append(hyps)
-            ret["scores"].append(scores)
-            ret["attention"].append(attn)
-        return ret
 
 
     def sample(self, src_encoding, dec_init_vec, sample_size=None, to_word=False):
@@ -903,8 +881,6 @@ def evaluate_loss(model, data, crit, use_teacher_forcing=True):
 
 
 def init_training(args):
-    vocab = torch.load(args.vocab)
-
     if args.load_model:
         print('load model from [%s]' % args.load_model, file=sys.stderr)
         params = torch.load(args.load_model, map_location=lambda storage, loc: storage)
@@ -915,6 +891,7 @@ def init_training(args):
         model = NMT(saved_args, vocab)
         model.load_state_dict(state_dict)
     else:
+        print(args.vocab)
         vocab = torch.load(args.vocab)
         model = NMT(args, vocab)
 
@@ -1054,7 +1031,6 @@ def custom_train(args):
                 bleu_loss, _ = bleu(probs, r,\
                             torch.tensor(hypo_lengths.tolist(),dtype=torch.long, device=device),\
                             ref_lengths.tolist(), smooth=True,device=device)
-                print(bleu_loss)
             else:
                 bleu_stacked = torch.stack([bleu(torch.stack([probs[j][:ref_lengths.tolist()[j]]]), \
                                 [r[j][:ref_lengths.tolist()[j]]],torch.tensor([hypo_lengths.tolist()[j]],dtype=torch.long, device=device),
@@ -1062,6 +1038,7 @@ def custom_train(args):
 
                 bleu_loss = torch.mean(bleu_stacked)
 
+            # unnecessary regularizer
             # sample_logp = F.log_softmax(scores.permute(1,0,2), dim=-1)
             #
             # entropy = - (sample_logp * torch.exp(sample_logp)).sum(dim=-1)
@@ -1077,7 +1054,7 @@ def custom_train(args):
             # loss = word_loss / batch_size
 
             loss = bleu_loss
-            a = list(model.parameters())[0].clone()
+            # a = list(model.parameters())[0].clone()
 
             # word_loss_val = word_loss.data[0]
             # loss_val = loss.data[0]
@@ -1089,11 +1066,11 @@ def custom_train(args):
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
             optimizer.step()
 
-            print(loss.grad)
-            b = list(model.parameters())[0].clone()
-
-            print(torch.equal(a.data, b.data))
-            exit()
+            # print(loss.grad)
+            # b = list(model.parameters())[0].clone()
+            #
+            # print(torch.equal(a.data, b.data))
+            # exit()
 
             report_loss += word_loss_val
             cum_loss += word_loss_val
@@ -1134,7 +1111,7 @@ def custom_train(args):
                 dev_ppl = np.exp(dev_loss)
 
                 if args.valid_metric in ['bleu', 'word_acc', 'sent_acc']:
-                    dev_hyps, dev_tgt= decode(model, dev_data, verbose=False)
+                    dev_hyps, dev_tgt= decode(model, dev_data, verbose=False, batch_size=1)
                     dev_hyps = [hyps[0] for hyps in dev_hyps]
                     if args.valid_metric == 'bleu':
                         # valid_metric = get_bleu([tgt for src, tgt in dev_data], dev_hyps)
@@ -1162,10 +1139,10 @@ def custom_train(args):
                         print('save model to [%s]' % model_file, file=sys.stderr)
                         model.save(model_file)
 
-                # if (not is_better_than_last) and args.lr_decay:
-                #     lr = optimizer.param_groups[0]['lr'] * args.lr_decay
-                #     print('decay learning rate to %f' % lr, file=sys.stderr)
-                #     optimizer.param_groups[0]['lr'] = lr
+                if (not is_better_than_last) and args.lr_decay:
+                    lr = optimizer.param_groups[0]['lr'] * args.lr_decay
+                    print('decay learning rate to %f' % lr, file=sys.stderr)
+                    optimizer.param_groups[0]['lr'] = lr
 
                 if is_better:
                     patience = 0
@@ -1185,7 +1162,6 @@ def custom_train(args):
                         exit(0)
             tqdm_bar.update(batch_size)
         tqdm_bar.close()
-
 
 
 def relax_train(args):
@@ -1208,8 +1184,7 @@ def relax_train(args):
     hist_valid_scores = []
     train_time = begin_time = time.time()
     print('begin custom training')
-    # for i in model.actor.parameters():
-    #     i.requires_grad = False
+
     while True:
         epoch += 1
         if epoch > args.max_epoch:
@@ -1219,6 +1194,7 @@ def relax_train(args):
         #train_data = list(zip(train_data_src, train_data_tgt))
         tqdm_bar = tqdm(total=len(train_data))
 
+        temperature = 1
         for src_sents, tgt_sents in di:
             # print(epoch, '--', train_iter)
             train_iter += 1
@@ -1229,11 +1205,15 @@ def relax_train(args):
             batch_size = len(src_sents)
             src_sents_len = [len(s) for s in src_sents]
             pred_tgt_word_num = sum(len(s[1:]) for s in tgt_sents) # omitting leading `<s>`
-
+            if train_iter % 150 == 0:
+                temperature = temperature + 20
+                print("Temperature:", temperature)
             optimizer.zero_grad()
             # (tgt_sent_len, batch_size, tgt_vocab_size)
-            scores, beam_scores = model(src_sents_var, src_sents_len, tgt_sents_var[:-1], use_teacher_forcing=False, relax_beam=True, beam_size=args.beam_size)
+            scores, beam_scores = model(src_sents_var, src_sents_len, tgt_sents_var[:-1], use_teacher_forcing=False,\
+                                        relax_beam=True, beam_size=args.beam_size, temperature=temperature)
             scores = scores.permute(0,2,1,3)
+            beam_scores = beam_scores.permute(1,0, 2)
 
             #scores = model(src_sents_var, src_sents_len, tgt_sents_var[:-1], use_teacher_forcing=False, relax_beam=False)
             #scores = scores.view(5*2, -1 ,len(model.vocab.tgt))
@@ -1243,22 +1223,28 @@ def relax_train(args):
             tgt_sents_numpy = tgt_sents_var.data.cpu().numpy()
             eos = model.vocab.tgt['</s>']
             bos = model.vocab.tgt['<s>']
+
             def _find_lentghs(sent):
                 """ sent (sent_len x batch_size) """
                 tmp = sent == eos
                 lens = np.argmax(tmp, axis=0)
-                return lens + 1
-                #return np.where(lens > 0, lens, tgt_sents_var.size(0)-20) + 1
+                #return lens + 1
+                return np.where(lens > 0, lens, sent.shape[0] - 1) + 1
 
-
-            greedy_hypo = np.argmax(scores_numpy, axis=-1)
+            greedy_hypo = np.argmax(scores_numpy, axis=-1) # tgt \s - is 3
             scores = scores.permute(1, 2, 0, 3)
 
             hypo_lengths = _find_lentghs(greedy_hypo) # no bos
             ref_lengths = _find_lentghs(tgt_sents_numpy) - 1 #because of bos
             probs = F.softmax(scores, dim=-1).to(device)
+            #print(probs.size())
+            #max_probs = torch.log(probs).sum(dim=-2)
+            #print(max_probs.size())
+            #print(torch.max(max_probs.transpose(0,1),dim=0)[1])
+            #probs = scores
             refs = tgt_sents_var[1:].permute(1, 0)
             r = refs.data.cpu().numpy().tolist()
+
 
             # print("bleu:",bleu(torch.stack([probs[1][0]]), [r[0]], torch.tensor([hypo_lengths[1].tolist()[0]],dtype=torch.long, device=device),\
             #                    [ref_lengths.tolist()[0]], smooth=True,device=device)[0])
@@ -1278,28 +1264,67 @@ def relax_train(args):
             #            ref_lengths.tolist(), smooth=True, device=device)[0])
             #print(probs[0].size())
             #print(probs[0][0][:hypo_lengths[0].tolist()[0]])
-            print(hypo_lengths[0])
-            print(scores[0,0,hypo_lengths[0][0]].size())
-            print(beam_scores[0])
+
 
             hypo_lengths = torch.tensor(hypo_lengths, dtype=torch.long, device=device, requires_grad=True)
-            print(hypo_lengths[0][0])
-            print(hypo_lengths.size())
-            print("max ", torch.min(hypo_lengths,dim=0))
+            beam_scores = torch.stack([torch.tensor([beam_scores[k][hypo_lengths[i][k] - 1][i] for k in range(batch_size)], \
+                                                    requires_grad=True, device=device)\
+                                       for i in range(args.beam_size)]).transpose(0,1)
 
-            first_eos = torch.max(hypo_lengths,dim=0)
-            print(bleu(torch.stack([probs[0][0][:hypo_lengths[0].tolist()[0]]]),\
-                                     [r[0][:ref_lengths.tolist()[0]]],\
-                       torch.tensor([hypo_lengths[0][0]]),\
-                                     [ref_lengths.tolist()[0]], smooth=True,device=device))
+            #print(beam_scores.size())
+            #print(torch.max(beam_scores, dim=-1))
+            #print(beam_scores[0])
+            # TODO: remove priority on the first beam in test time
+
+            # print(hypo_lengths[0][0])
+            # print("max ", torch.min(hypo_lengths,dim=0))
+            # print(torch.argmax(scores[:,0], dim=-1))
+            # print(torch.argmax(scores[:,1], dim=-1))
+
+            # first_eos = torch.max(hypo_lengths,dim=0)
+            # print("bleu:",bleu(torch.stack([probs[0][0][:hypo_lengths[0].tolist()[0]]]),\
+            #                          [r[0][:ref_lengths.tolist()[0]]],\
+            #            torch.tensor([hypo_lengths[0][0]]),\
+            #                          [ref_lengths.tolist()[0]], smooth=True,device=device))
             if args.sentence_bleu:
+                #print("beam_scores", beam_scores.requires_grad)
+                #print("scores", scores.requires_grad)
+
+                beam_scores = F.softmax(beam_scores*temperature, dim=-1)
+                with torch.no_grad():
+                    best_beam_ids = torch.max(beam_scores,dim=1)[1].data.cpu().numpy()
+                    #best_beam_ids = [0]*args.batch_size
+                #print("best_beam_ids", best_beam_ids.requires_grad)
                 if args.beam_size != 1:
-                    bleu_stacked = torch.stack([torch.tensor([bleu(torch.stack([probs[k][j][:ref_lengths.tolist()[j]]]),\
-                                     [r[j][:ref_lengths.tolist()[j]]],torch.tensor([hypo_lengths[k].tolist()[j]],dtype=torch.long, device=device,requires_grad=True),\
-                                     [ref_lengths.tolist()[j]], smooth=True,device=device)[0] \
-                                                  for j in range(batch_size)], device=device, requires_grad=True) for k in range(args.beam_size) ])#.transpose(0,1)
+                    # bleu_stacked = torch.stack([torch.tensor([bleu(torch.stack([probs[k][j][:hypo_lengths[best_beam_ids[j]][j]]]),\
+                    #                  [r[j][:ref_lengths.tolist()[j]]],torch.tensor([hypo_lengths[k].tolist()[j]],dtype=torch.long, device=device,requires_grad=True),\
+                    #                  [ref_lengths.tolist()[j]], smooth=True,device=device)[0] \
+                    #                               for j in range(batch_size)], device=device, requires_grad=True) for k in range(args.beam_size) ])#.transpose(0,1)
+                    bleu_result = []
+                    for k in range(args.beam_size):
+
+                        bleu_result.append(torch.stack([bleu(torch.stack([probs[k][j][:hypo_lengths[best_beam_ids[j]][j]]]), \
+                                                     [r[j][:ref_lengths[j]]],
+                                                     torch.tensor([hypo_lengths[best_beam_ids[j]][j]], dtype=torch.long,
+                                                                  device=device),
+                                                     [ref_lengths[j]], smooth=True, device=device)[0] for j in
+                                                range(batch_size)]))
+
+                    bleu_stacked = torch.stack(bleu_result)
+
+                    # bleu_stacked = torch.stack([torch.tensor([bleu(torch.stack([probs[0][j][:hypo_lengths[0].tolist()[j]]]), \
+                    #                                  [r[j][:ref_lengths.tolist()[j]]],
+                    #                                  torch.tensor([hypo_lengths[0].tolist()[j]], dtype=torch.long,
+                    #                                               device=device),
+                    #                                  [ref_lengths.tolist()[j]], smooth=True, device=device)[0] for j in
+                    #                             range(batch_size)], \
+                    #                                          device=device, requires_grad=True
+                    #                                          )])
+                    #print(bleu_stacked.size())
+                    #print(bleu_stacked.repeat((args.beam_size,1)).size())
+                    #bleu_stacked = bleu_stacked.repeat((args.beam_size,1)).reshape(args.beam_size,-1)
                 else:
-                    bleu_stacked = torch.stack([bleu(torch.stack([probs[0][j][:ref_lengths.tolist()[j]]]), \
+                    bleu_stacked = torch.stack([bleu(torch.stack([probs[0][j][:hypo_lengths[0].tolist()[j]]]), \
                                                      [r[j][:ref_lengths.tolist()[j]]],
                                                      torch.tensor([hypo_lengths[0].tolist()[j]], dtype=torch.long,
                                                                   device=device),
@@ -1316,8 +1341,14 @@ def relax_train(args):
                     #                                           for j in range(batch_size)], device=device,
                     #                                          requires_grad=True) for k in range(args.beam_size)])
 
-                beam_scores = F.softmax(beam_scores, dim=-1)
                 bleu_loss = torch.mean(torch.mm(beam_scores, bleu_stacked))
+                #print("bleu_stacked", bleu_stacked[0].requires_grad)
+                #print("bleu_loss", bleu_loss.requires_grad)
+            elif args.cross_entropy:
+                beam_scores = F.softmax(torch.sum(beam_scores, dim=0).unsqueeze(0), dim=-1)
+                ce_stacked = torch.stack([cross_entropy_loss(scores[k].contiguous().view(-1, scores.size(3)),\
+                                                             tgt_sents_var[1:].contiguous().view(-1)) for k in range(args.beam_size)]).unsqueeze(1)
+                bleu_loss = torch.mean(torch.mm(beam_scores, ce_stacked)) / (batch_size * args.beam_size)
 
             else:
                 print("corpus bleu")
@@ -1326,34 +1357,45 @@ def relax_train(args):
                             torch.tensor(hypo_lengths[k].tolist(),dtype=torch.long, device=device),\
                              ref_lengths.tolist(), smooth=True,device=device)[0] for k in range(args.beam_size)], dim=0)
 
-                bleu_loss =  F.softmax(torch.sum(beam_scores,dim=0),dim=-1).dot(bleu_scores)
+                bleu_loss = F.softmax(torch.sum(beam_scores,dim=0),dim=-1).dot(bleu_scores)
 
-            #bleu_loss = torch.sum(beam_scores,dim=0).dot(bleu_scores)
-            # print(bleu_loss)
-            # word_loss = cross_entropy_loss(scores.view(-1, scores.size(2)), tgt_sents_var[1:].view(-1))
+            # if bleu_loss.item() > -0.15:
+            #     print(torch.tensor(greedy_hypo[...,0]).transpose(0,1))
+            #     print(refs[0])
+            #     print(beam_scores[0])
+            #     print("bleu:",bleu(torch.stack([probs[0][0][:hypo_lengths[0].tolist()[0]]]),\
+            #                              [r[0][:ref_lengths.tolist()[0]]],\
+            #                torch.tensor([hypo_lengths[0][0]]),\
+            #                              [ref_lengths.tolist()[0]], smooth=True,device=device))
+            #     print(hypo_lengths)
+            #     print(ref_lengths)
+            #     exit()
+
+            #word_loss = cross_entropy_loss(scores.view(-1, scores.size(2)), tgt_sents_var[1:].view(-1))
             # loss = word_loss / batch_size
             loss = bleu_loss
-            print(beam_scores)
-            exit()
+            # print(bleu_loss)
+            # exit()
             # word_loss_val = word_loss.data[0]
             # loss_val = loss.data[0]
+            
             word_loss_val = bleu_loss.item()
             loss_val = loss.item()
 
             #a = list(model.parameters())[0].clone()
-
             loss.backward()
             # clip gradient
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
             optimizer.step()
 
-            #grads = list(model.parameters())[0].grad
-            #print(grads)
-            #print(loss.grad)
-            #b = list(model.parameters())[0].clone()
-
-            #print(torch.equal(a.data, b.data))
-
+            # grads = list(model.parameters())[0].grad
+            # print(grads)
+            # print(loss.grad)
+            # b = list(model.parameters())[0].clone()
+            #
+            #
+            # print(torch.equal(a.data, b.data))
+            # exit()
             report_loss += word_loss_val
             cum_loss += word_loss_val
             report_tgt_words += pred_tgt_word_num
@@ -1393,14 +1435,19 @@ def relax_train(args):
                 dev_ppl = np.exp(dev_loss)
 
                 if args.valid_metric in ['bleu', 'word_acc', 'sent_acc']:
-                    dev_hyps, dev_tgt= decode(model, dev_data, verbose=False)
+                    dev_hyps, dev_tgt = decode(model, dev_data, verbose=False)
                     dev_hyps = [hyps[0] for hyps in dev_hyps]
+
+                    dev_hyps2, dev_tgt2 = decode(model, dev_data, verbose=False, beam_size=args.beam_size-1)
+                    dev_hyps2 = [hyps[0] for hyps in dev_hyps2]
+                    valid_metric = compute_bleu([[tgt] for tgt in dev_tgt2], dev_hyps2)[0]
+                    print("Fake bleu:", valid_metric)
                     if args.valid_metric == 'bleu':
                         # valid_metric = get_bleu([tgt for src, tgt in dev_data], dev_hyps)
                         valid_metric = compute_bleu([[tgt] for tgt in dev_tgt], dev_hyps)[0]
-                        # print('-'*10)
-                        # print('compute_bleu', valid_metric)
-                        # print('-'*10)
+                        print('-'*10)
+                        print('compute_bleu', valid_metric)
+                        print('-'*10)
                     else:
                         valid_metric = get_acc([tgt for src, tgt in dev_data], dev_hyps, acc_type=args.valid_metric)
                     print('validation: iter %d, dev. ppl %f, dev. %s %f' % (train_iter, dev_ppl, args.valid_metric, valid_metric),
@@ -1411,7 +1458,7 @@ def relax_train(args):
                           file=sys.stderr)
 
                 model.train()
-
+                print(hist_valid_scores)
                 is_better = len(hist_valid_scores) == 0 or valid_metric > max(hist_valid_scores)
                 is_better_than_last = len(hist_valid_scores) == 0 or valid_metric > hist_valid_scores[-1]
                 hist_valid_scores.append(valid_metric)
@@ -1421,6 +1468,11 @@ def relax_train(args):
                     if is_better:
                         print('save model to [%s]' % model_file, file=sys.stderr)
                         model.save(model_file)
+                    try:
+                        model.save("./models/model_relax_{}".format(train_iter))
+                    except Exception:
+                        pass
+
 
                 # if (not is_better_than_last) and args.lr_decay:
                 #     lr = optimizer.param_groups[0]['lr'] * args.lr_decay
@@ -1445,6 +1497,7 @@ def relax_train(args):
                         exit(0)
             tqdm_bar.update(batch_size)
         tqdm_bar.close()
+
 
 def custom_train2(args):
     """
@@ -2624,7 +2677,7 @@ def get_acc(references, hypotheses, acc_type='word'):
     return acc
 
 
-def decode(model, data, batch_size=1, verbose=True):
+def decode(model, data, batch_size=1, verbose=True, beam_size=None):
     """
     decode the dataset and compute sentence level acc. and BLEU.
     """
@@ -2632,14 +2685,16 @@ def decode(model, data, batch_size=1, verbose=True):
     targets = []
     begin_time = time.time()
     data = data
-    batch_size = 2048
-    print("decode with beam size:", args.beam_size)
-    if type(data[0]) is tuple:
+    if beam_size is None:
+        beam_size = args.beam_size
+    print("decode with beam size:", beam_size)
+    if batch_size != 1:
+        print("batch_size != 1")
         di = data_iter(data, batch_size=batch_size, shuffle=False)
         tqdm_bar = tqdm(total=len(data))
         for src_sent, tgt_sent in di:
             size = len(src_sent)
-            batch_hyps = model.translate_batch(src_sent, beam_size=args.beam_size)
+            batch_hyps = model.translate_batch(src_sent, beam_size=beam_size)
             #total_scores = model.relax_decode(src_sent, beam_size=args.beam_size)
             for i in range(len(batch_hyps)):
                 hypotheses.append(batch_hyps[i])
@@ -2648,19 +2703,22 @@ def decode(model, data, batch_size=1, verbose=True):
                     print('*' * 50)
                     print('Source: ', ' '.join(src_sent[i]))
                     print('Target: ', ' '.join(tgt_sent[i][1:]))#without bos
-                    print('Top Hypothesis: ', ' '.join(batch_hyps[i][0]))
+                    print('Top Hypothesis: ', ' '.join(batch_hyps[i][0][1:]))
             tqdm_bar.update(size)
         tqdm_bar.close()
     else:
-        for src_sent in data:
+        tqdm_bar = tqdm(total=len(data))
+        for src_sent, tgt_sent in data:
             hyps = model.translate(src_sent)
             hypotheses.append(hyps)
-
+            targets.append(tgt_sent)
             if verbose:
                 print('*' * 50)
                 print('Source: ', ' '.join(src_sent))
-                print('Top Hypothesis: ', ' '.join(hyps[0]))
-
+                print('Target: ', ' '.join(tgt_sent[1:]))  # without bos
+                print('Top Hypothesis: ', ' '.join(hyps[0][1:]))
+            tqdm_bar.update(1)
+        tqdm_bar.close()
     elapsed = time.time() - begin_time
 
     print('decoded %d examples, took %d s' % (len(data), elapsed), file=sys.stderr)
@@ -2731,8 +2789,8 @@ def compute_lm_prob(args):
 
 
 def test(args):
-    test_data_src = read_corpus(args.test_src, source='src')
-    test_data_tgt = read_corpus(args.test_tgt, source='tgt')
+    test_data_src = read_corpus(args.test_src, source='src')[:500]
+    test_data_tgt = read_corpus(args.test_tgt, source='tgt')[:500]
     test_data = list(zip(test_data_src, test_data_tgt))
 
     if args.load_model:
@@ -2751,10 +2809,12 @@ def test(args):
     model.eval()
     model.to(device)
 
-    hypotheses, targets = decode(model, test_data, batch_size=4096, verbose=False)
+    hypotheses, targets = decode(model, test_data, batch_size=2, verbose=False)
     top_hypotheses = [hyps[0] for hyps in hypotheses]
 
-
+    # print(top_hypotheses)
+    # print("–" * 25)
+    # print(targets)
     bleu_score = compute_bleu([[tgt] for tgt in targets], top_hypotheses)
     word_acc = get_acc([tgt for src, tgt in test_data], top_hypotheses, 'word_acc')
     sent_acc = get_acc([tgt for src, tgt in test_data], top_hypotheses, 'sent_acc')
