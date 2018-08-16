@@ -21,7 +21,7 @@ class Logger:
         time = gmtime()
         hash = ''.join([chr(random.randint(97, 122)) for _ in range(3)])
         fname = '-'.join(sys.argv[0].split('/')[-3:])
-        self.path = '%s/%s-%s-%s' % (base, fname, name, hash)
+        self.path = '%s/%s-%s-%s-%s-%s-%s' % (base, fname, name, hash,gmtime().tm_mon, gmtime().tm_hour, gmtime().tm_min)
 
         self.logs = self.path + '.csv'
         self.output = self.path + '.out'

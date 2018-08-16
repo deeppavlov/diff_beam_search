@@ -987,7 +987,7 @@ def custom_train(args):
     #     i.requires_grad = False
 
     fmt = {'bleu_loss':'.5e'}
-    logger = Logger("bleu_with_sampling", fmt=fmt)
+    logger = Logger("bleu_with_tf", fmt=fmt)
 
     while True:
         epoch += 1
@@ -1214,8 +1214,8 @@ def relax_train(args):
             src_sents_len = [len(s) for s in src_sents]
             pred_tgt_word_num = sum(len(s[1:]) for s in tgt_sents) # omitting leading `<s>`
 
-            if train_iter % 500 == 0:
-                temperature = temperature
+            if train_iter % 200 == 0:
+                temperature = temperature + 250
             #     print("Temperature:", temperature)
 
             optimizer.zero_grad()
@@ -1226,14 +1226,13 @@ def relax_train(args):
             probs = probs.permute(0,2,1,3)
             beam_scores = beam_scores.permute(1,0, 2)
 
-            #scores = model(src_sents_var, src_sents_len, tgt_sents_var[:-1], use_teacher_forcing=False, relax_beam=False)
-            #scores = scores.view(5*2, -1 ,len(model.vocab.tgt))
-            #scores = scores.permute(1,0,2)
-
             scores_numpy = probs.data.cpu().numpy()
             tgt_sents_numpy = tgt_sents_var.data.cpu().numpy()
             eos = model.vocab.tgt['</s>']
             bos = model.vocab.tgt['<s>']
+
+            if train_iter == 1800:
+                exit()
 
             def _find_lentghs(sent):
                 """ sent (sent_len x batch_size) """
@@ -1295,16 +1294,16 @@ def relax_train(args):
             #                            for i in range(args.beam_size)]).transpose(0,1)
 
             # TODO: remove priority on the first beam in test time
-            sample_logp = torch.log(probs + 1e-10)
+            sample_logp = torch.log(probs + 1e-6)
             # first_eos = torch.max(hypo_lengths,dim=0)
             if args.sentence_bleu:
 
                 # find max probability for eos
                 # length x beam x batch
                 eos_probs = torch.stack([probs[:, :, j, eos] for j in range(probs.size()[2])])
-                eos_log_probs = torch.stack([torch.log(eos_probs[0] + 1e-10)] +
-                                            [torch.sum(torch.log(1 - eos_probs[:j - 1] + 1e-10), dim=0) + \
-                                             torch.log(eos_probs[j - 1] + 1e-10) for j in
+                eos_log_probs = torch.stack([torch.log(eos_probs[0] + 1e-8)] +
+                                            [torch.sum(torch.log(1 - eos_probs[:j - 1] + 1e-5), dim=0) + \
+                                             torch.log(eos_probs[j - 1] + 1e-8) for j in
                                              range(2, probs.size()[2])])  # + [eos_true]
                 eos_exp_probs = torch.exp(eos_log_probs)
                 prob_sum_prev = torch.sum(eos_exp_probs, dim=0)
@@ -1335,6 +1334,13 @@ def relax_train(args):
                     #                               for j in range(batch_size)], device=device, requires_grad=True) for k in range(args.beam_size) ])#.transpose(0,1)
 
                     bleu_result = []
+                    if torch.sum(torch.isnan(eos_log_probs)):
+                        print(eos_probs)
+                        print(exp_probs[:,0,3])
+                        exit()
+                    #print(total_eos_probs)
+                    #print(total_eos_probs.size())
+
                     for k in range(args.beam_size):
                         #best_beam_ids[j]
                         bleu_result.append(torch.stack([total_eos_probs[k,j]*bleu(torch.stack([probs[k][j][:id_eoses[k,j]]]), \
@@ -1358,13 +1364,13 @@ def relax_train(args):
                     logger.add_scalar(train_iter,"all_bleu", bleu_stacked)
 
 
-                    # if train_iter % 150 ==0:
-                    #     #print(total_eos_probs)
-                    #     print(expected_length[:,0])
-                    #     print(beam_scores[0])
-                    #     print(bleu_stacked[:,0])
-                    #     print(greedy_hypo[:max(id_eoses[:,0]),:,0])
-                    #     print(r[0][:ref_lengths[0]])
+                    if train_iter % 500 ==0:
+                        #print(total_eos_probs)
+                        print(expected_length[:,0])
+                        print(beam_scores[0])
+                        print(bleu_stacked[:,0])
+                        print(greedy_hypo[:max(id_eoses[:,0]),:,0])
+                        print(r[0][:ref_lengths[0]])
 
                     # Corpus bleu test
 #                     corpus_bl = []
@@ -1486,15 +1492,14 @@ def relax_train(args):
             # b = list(model.parameters())[0].clone()
             # print(torch.equal(a.data, b.data))
             # exit()
-            report_loss += word_loss_val
+            report_loss += entropy
             cum_loss += word_loss_val
             report_tgt_words += pred_tgt_word_num
             cum_tgt_words += pred_tgt_word_num
             report_examples += batch_size
             cum_examples += batch_size
             cum_batches += batch_size
-            if train_iter % 50 == 0:
-                logger.save()
+            logger.save()
             if train_iter % args.log_every == 0:
                 logger.iter_info()
                 print('loss', loss_val)
@@ -1565,7 +1570,7 @@ def relax_train(args):
                         print('save model to [%s]' % model_file, file=sys.stderr)
                         model.save(model_file)
                     try:
-                        model.save("./models/model_relax_{}".format(train_iter))
+                        model.save("./models/model_relax_beam{}_{}".format(args.beam_size,train_iter))
                     except Exception:
                         pass
 
@@ -1782,7 +1787,8 @@ def custom_train3(args):
     hist_valid_scores = []
     train_time = begin_time = time.time()
     print('begin custom training')
-
+    fmt = {'bleu_loss': '.5e'}
+    logger = Logger("reinforce_train", fmt=fmt)
     while True:
         epoch += 1
         if epoch > args.max_epoch:
@@ -1825,18 +1831,21 @@ def custom_train3(args):
             greedy_bleu = bleu_score(greedy_sample, r, model.vocab.tgt.id2word, corpus_average=False)
             advantage = sample_bleu - greedy_bleu
             advantage = torch.tensor(advantage, dtype=torch.float, device=device)
-            J = torch.sum(multi_samples.log_prob(sample) * advantage[:, None])
-            # average with mask
-
             mask = infer_mask(sample, eos)
-            loss = - torch.sum(J * mask) / torch.sum(mask)
+
+            J = multi_samples.log_prob(sample) * advantage[:, None] *mask
+            # average with mask
+            loss = - torch.sum(J ) / torch.sum(mask)
             word_loss_val = loss.item()
             loss_val = loss.item()
+            logger.add_scalar(train_iter, 'loss', loss.item())
 
             loss.backward()
             # clip gradient
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
             optimizer.step()
+
+            logger.save()
             report_loss += word_loss_val
             cum_loss += word_loss_val
             report_tgt_words += pred_tgt_word_num

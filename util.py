@@ -70,6 +70,8 @@ def data_iter(data, batch_size, shuffle=True):
     for batch in batched_data:
         yield batch
 
+#def compute_word_entropy(probs, log_probs):
+
 
 def gpu_mem_dump():
     """
