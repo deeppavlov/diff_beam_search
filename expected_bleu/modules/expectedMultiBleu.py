@@ -27,6 +27,9 @@ except:
     from modules.utils import CUDA_wrapper
 import sys
 
+device = torch.device("cuda")
+
+
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
@@ -41,6 +44,7 @@ class Reslicer:
     def __call__(self, x):
         return self.max_l - x
 
+
 def ngrams_product(A, n):
     """
     A-is probability matrix
@@ -50,14 +54,17 @@ def ngrams_product(A, n):
     Output: [batch, (length_candidate_translation-n+1) x (reference_len-n+1)]
     """
     max_l = min(A.size()[1:])
+    ref_len = A.size()[2]
     reslicer = Reslicer(max_l)
+    reslicer_ref = Reslicer(ref_len)
     if reslicer(n-1) <= 0:
         return None
-    cur = A[:, :reslicer(n-1), :reslicer(n-1)].clone()
+    cur = A[:, :reslicer(n-1), :reslicer_ref(n-1)].clone()
     for i in range(1, n):
-        mul = A[:, i:reslicer(n-1-i), i:reslicer(n-1-i)]
-        cur = cur *  mul
+        mul = A[:, i:reslicer(n-1-i), i:reslicer_ref(n-1-i)]
+        cur = cur * mul
     return cur
+
 
 def get_selected_matrices(probs, references, dim=1, sanity_check=False):
     """
@@ -71,17 +78,21 @@ def get_selected_matrices(probs, references, dim=1, sanity_check=False):
 
     batch_size, seq_len, vocab_size = probs.size()
     references = torch.from_numpy(np.array(references)).long() # batch_size x seq_len
+    ref_seq_len = references.size()[1]
     vocab_extension = torch.arange(0, batch_size).long() * vocab_size # batch_size
     if torch.cuda.is_available():
         references = references.cuda()
         vocab_extension = vocab_extension.cuda()
+    # print(vocab_extension.size())
+    # print(vocab_size)
     references_extended_vocab = (references + vocab_extension.unsqueeze(-1)).view(-1) # batch_size * seq_len
     probs_extended_vocab = torch.transpose(probs, 0, 1).contiguous().view(seq_len, -1) # seq_len x batch_size * vocab_size
     probs_reduced_extended_vocab = torch.index_select(
-        probs_extended_vocab, dim, Variable(references_extended_vocab)
+        probs_extended_vocab, dim, references_extended_vocab
     ) # seq_len x batch_size * seq_len
+    #print(seq_len)
     probs_reduced_vocab = torch.transpose(
-        probs_reduced_extended_vocab.view(seq_len, batch_size, seq_len), 0, 1
+        probs_reduced_extended_vocab.view(seq_len, batch_size, ref_seq_len), 0, 1
     ) # batch_size x seq_len x seq_len
     if sanity_check:
         probs_reduced_vocab_loop = torch.cat(
@@ -92,6 +103,7 @@ def get_selected_matrices(probs, references, dim=1, sanity_check=False):
             print(probs_reduced_vocab)
             print(probs_reduced_vocab_loop)
     return probs_reduced_vocab
+
 
 def ngram_ref_counts(reference, lengths, n):
     """
@@ -124,6 +136,7 @@ def ngram_ref_counts(reference, lengths, n):
         res.append(occurrence + padding)
     return Variable(FloatTensor(res), requires_grad=False)
 
+
 def calculate_overlap(p, r, n, lengths):
     """
     p - probability tensor [b x len_x x reference_length]
@@ -135,14 +148,15 @@ def calculate_overlap(p, r, n, lengths):
     A = ngrams_product(get_selected_matrices(p, r), n)
     r_cnt = ngram_ref_counts(r, lengths, n)
     if A is None or r_cnt is None:
-        return CUDA_wrapper(torch.zeros(p.data.shape[0]))
+        return torch.zeros(p.data.shape[0]).to(device)
     r_cnt = r_cnt[:, None]
     A_div = -A + torch.sum(A, 1, keepdim=True) + 1
     second_arg = r_cnt / A_div
     term = torch.min(A, A * second_arg)
-    return torch.sum(torch.sum(term, 2), 1)
+    return torch.sum(torch.sum(term, 2), 1).to(device)
 
-def bleu(p, r, translation_lengths, reference_lengths, max_order=4, smooth=False):
+
+def bleu(p, r, translation_lengths, reference_lengths, max_order=4, smooth=False, device=torch.device("cpu")):
     """
     p - matrix with probabilityes
     r - reference batch
@@ -155,16 +169,17 @@ def bleu(p, r, translation_lengths, reference_lengths, max_order=4, smooth=False
     translation_length = sum(translation_lengths)
     reference_length = sum(reference_lengths)
     for n in range(1, max_order + 1):
-        overlaps_list.append(calculate_overlap(p, r, n, reference_lengths))
-    overlaps = torch.stack(overlaps_list)
+        overlaps_list.append(calculate_overlap(p, r, n, reference_lengths).to(device))
+    overlaps = torch.stack(overlaps_list).to(device)
     matches_by_order = torch.sum(overlaps, 1)
-    possible_matches_by_order = torch.zeros(max_order)
+    possible_matches_by_order = torch.zeros(max_order).to(device)
     for n in range(1, max_order + 1):
         cur_pm = translation_lengths.float() - n + 1
         mask = cur_pm > 0
         cur_pm *= mask.float()
         possible_matches_by_order[n - 1] = torch.sum(cur_pm)
-    precisions = Variable(FloatTensor([0] * max_order))
+    # precision by n-gram
+    precisions = torch.tensor([0] * max_order,device=device, dtype=torch.float)
     for i in range(max_order):
         if smooth:
             precisions[i] = (matches_by_order[i] + 1) /\
@@ -174,40 +189,40 @@ def bleu(p, r, translation_lengths, reference_lengths, max_order=4, smooth=False
                 precisions[i] = matches_by_order[i] /\
                                             possible_matches_by_order[i]
             else:
-                precisions[i] = Variable(FloatTensor([0]))
-    if torch.min(precisions[:max_order]).data[0] > 0:
+                precisions[i] = torch.tensor([0], dtype=torch.float, device=device)
+    if torch.min(precisions[:max_order]).item() > 0:
         p_log_sum = sum([(1. / max_order) * torch.log(p) for p in precisions])
         geo_mean = torch.exp(p_log_sum)
     else:
         geo_mean = torch.pow(\
                         reduce(lambda x, y: x*y, precisions), 1./max_order)
         eprint('WARNING: some precision(s) is zero')
-    ratio = float(translation_length) / reference_length
-    if ratio > 1.0:
-        bp = 1.0
+    ratio = translation_length / float(reference_length)
+    if ratio.item() >= 1.0: #TODO : expecation of eos
+        bp = torch.tensor(1,dtype=torch.float, requires_grad=True, device=device)#ratio.new_ones(1, requires_grad=True).item()
     else:
-        if ratio > 1E-1:
-            bp = np.exp(1 - 1. / ratio)
+        if ratio.item() >= 1E-1:
+            bp = torch.exp(1 - 1. / ratio)
         else:
             bp = 1E-2
     bleu = -geo_mean * bp
     return bleu, precisions
 
-def continuous_lengths(probs: Variable, eos_id: int):
+
+def continuous_lengths(probs: torch.Tensor, eos_id: int):
     """
     probs: b x seq_len x vocab_size
     eos_id - end of sentence id
     """
     eos_probs = probs[:, : , eos_id]
     eos_shifted_logs = torch.cumsum(torch.log(1 - eos_probs), dim=1)[:, :-1]
-    pad_first = Variable(CUDA_wrapper(torch.zeros(\
-                        eos_shifted_logs.size()[0], 1)-1E3), requires_grad=False)
+    pad_first = CUDA_wrapper(torch.zeros(\
+                        eos_shifted_logs.size()[0], 1)-1E3)
     eos_real_probs = torch.exp(torch.cat((pad_first ,eos_shifted_logs), dim=1) + torch.log(eos_probs))
     seq_len = eos_probs.size()[1]
     batch_size = eos_probs.size()[0]
     sizes = FloatTensor([[i+1 for i in range(seq_len)]\
                                for _ in range(batch_size)]).view(batch_size, seq_len)
-    sizes = Variable(sizes, requires_grad=False)
     return torch.sum(eos_real_probs * sizes, dim=1)
 
 def bleu_with_bp(p: Variable, r: list, reference_lengths: list,\
@@ -246,8 +261,8 @@ def bleu_with_bp(p: Variable, r: list, reference_lengths: list,\
                 precisions[i] = matches_by_order[i] /\
                                             possible_matches_by_order[i]
             else:
-                precisions[i] = Variable(FloatTensor([0]))
-    if torch.min(precisions[:max_order]).data[0] > 0:
+                precisions[i] = torch.tensor([0], dtype=torch.float, requires_grad=True)
+    if torch.min(precisions[:max_order]).item() > 0:
         p_log_sum = sum([(1. / max_order) * torch.log(p) for p in precisions])
         geo_mean = torch.exp(p_log_sum)
     else:
@@ -255,10 +270,10 @@ def bleu_with_bp(p: Variable, r: list, reference_lengths: list,\
                         reduce(lambda x, y: x*y, precisions), 1./max_order)
         eprint('WARNING: some precision(s) is zero')
     ratio = translation_length / float(reference_length)
-    if ratio.data[0] > 1.0:
+    if ratio.item() > 1.0:
         bp = 1.0
     else:
-        if ratio.data[0] > 1E-1:
+        if ratio.item() > 1E-1:
             bp = torch.exp(1 - 1. / ratio)
             # bp = Variable(torch.from_numpy(np.exp(1 - 1. / ratio)), requeires_grad=False)
         else:

@@ -9,7 +9,7 @@ Code for paper: XXX
 * `util.py`: script containing helper functions
 ## Usage
 See ```EXAMPLE_SETUP.md```
-* Pytorch **0.2** is used. See [pytorch previous versions](http://pytorch.org/previous-versions/)
+* Pytorch **0.4** is used.
 
 * Add expected_bleu module to PYTHONPATH
 

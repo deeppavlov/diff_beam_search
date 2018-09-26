@@ -1,5 +1,9 @@
 from collections import defaultdict
+
+import gc
 import numpy as np
+import torch
+
 
 def read_corpus(file_path, source):
     data = []
@@ -28,12 +32,30 @@ def batch_slice(data, batch_size, sort=True):
         yield src_sents, tgt_sents
 
 
+def infer_mask(seq, eos_ix, batch_first=True, include_eos=True, type=torch.FloatTensor):
+    """
+    compute length given output indices and eos code
+    :param seq: matrix [seq,batch] if batch_first else [batch,time]
+    :param eos_ix: integer index of end-of-sentence token
+    :param include_eos: if True, the time-step where eos first occurs is has mask = 1
+    :returns: lengths, int32 vector of shape [batch]
+    """
+    is_eos = (seq == eos_ix).type(torch.FloatTensor)
+    if include_eos:
+        if batch_first:
+            is_eos = torch.cat((is_eos[:,:1]*0, is_eos[:, :-1]), dim=1)
+        else:
+            is_eos = torch.cat((is_eos[:1,:]*0, is_eos[:-1, :]), dim=0)
+    count_eos = torch.cumsum(is_eos, dim=1 if batch_first else 0)
+    mask = count_eos == 0
+    return mask.type(type).cuda()
+
+
 def data_iter(data, batch_size, shuffle=True):
     """
     randomly permute data, then sort by source length, and partition into batches
     ensure that the length of source sentences in each batch is decreasing
     """
-
     buckets = defaultdict(list)
     for pair in data:
         src_sent = pair[0]
@@ -42,10 +64,26 @@ def data_iter(data, batch_size, shuffle=True):
     batched_data = []
     for src_len in buckets:
         tuples = buckets[src_len]
-        if shuffle: np.random.shuffle(tuples)
         batched_data.extend(list(batch_slice(tuples, batch_size)))
-
     if shuffle:
         np.random.shuffle(batched_data)
     for batch in batched_data:
         yield batch
+
+#def compute_word_entropy(probs, log_probs):
+
+
+def gpu_mem_dump():
+    """
+    Add info about tensors on cuda
+    """
+    with open("gpu_mem.txt", "a+") as f:
+        try:
+            f.write(20 * "-" + "\n")
+            f.write("New iteration\n")
+            f.write(20 * "-" + "\n")
+            for obj in gc.get_objects():
+                if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                    f.write(str(type(obj)) + str(obj.size()) + "\n")
+        except Exception:
+            pass
